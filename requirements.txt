@@ -1,0 +1,6 @@
+geopandas==1.0.1
+numpy==1.23.4
+pandas==3.0.5
+rasterio==1.4.3
+scipy==1.18.1
+Shapely==2.1.2
