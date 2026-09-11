@@ -1,7 +1,4 @@
 import rasterio
-from rasterio import features
-from rasterio.windows import Window, transform as window_transform
-from rasterio.warp import reproject, Resampling
 import numpy as np
 from scipy.ndimage import uniform_filter
 import geopandas as gpd
@@ -12,6 +9,8 @@ import argparse
 
 
 def load_scene(filepath):
+     '''Loads a single-band raster (SAR or DEM) and returns the array + geospatial metadata'''
+
      with rasterio.open(filepath) as dataset:
           array = dataset.read(1)
           crs = dataset.crs
@@ -21,39 +20,44 @@ def load_scene(filepath):
 
 
 def load_and_align(filepath, ref_transform, ref_shape, sar_crs):
+     '''Loads a raster and resamples it onto a reference grid to ensure the scenes are aligned'''
+
      destination = np.empty(ref_shape, dtype=np.float32)
 
      array, crs, transform = load_scene(filepath)
 
-     reproject(
+     rasterio.warp.reproject(
           source=array,
           destination=destination,
           src_transform=transform,
           src_crs=crs,
           dst_transform=ref_transform,
           dst_crs=sar_crs,
-          resampling=Resampling.bilinear
+          resampling=rasterio.warp.Resampling.bilinear
      )
 
      return destination
 
 
 def to_decibels(array, epsilon=1e-10):
+     '''Converts raw linear power to decibels'''
 
      return 10 * np.log10(array + epsilon)
 
 
 def lee_filter(image, window_size=7, enl=4.4):
+     '''Adaptive despeckling filter (Lee, 1980)'''
+
      local_mean = uniform_filter(image, size = window_size)
 
      mse = uniform_filter(image**2, size = window_size)
 
-     local_var = mse - local_mean**2
+     local_var = mse - local_mean**2 #expected noise var from sensor's ENL
 
      noise_var = 1 / enl
 
      signal_var = local_var - (local_mean**2 * noise_var)
-     signal_var = np.clip(signal_var, 0, None)
+     signal_var = np.clip(signal_var, 0, None) #var can't be negative
 
      W = signal_var / (local_mean**2 * noise_var + signal_var)
 
@@ -61,6 +65,7 @@ def lee_filter(image, window_size=7, enl=4.4):
 
 
 def compute_histogram(image, num_bins=256, value_range=None):
+     '''Computes and returns normalized probabilities per bin + bin edges'''
 
      counts, bin_edges = np.histogram(image, bins=num_bins, range=value_range)
      probabilities = counts / counts.sum()
@@ -69,6 +74,7 @@ def compute_histogram(image, num_bins=256, value_range=None):
 
 
 def cumulative_weight_and_means(probabilities, bin_values):
+     '''For every possbile threshold t: cumulative weight and mean on each side (dark/bright)'''
 
      omega_0 = np.cumsum(probabilities)
      omega_1 = 1 - omega_0
@@ -79,6 +85,8 @@ def cumulative_weight_and_means(probabilities, bin_values):
 
 
 def otsu_threshold(img, num_bins=256):
+     '''Finds the threshold that best seperates the image into two classes (Otsu, 1979)'''
+
      probabilities, bin_edges = compute_histogram(img, num_bins)
      bin_values = (bin_edges[:-1] + bin_edges[1:]) / 2
      omega_0, omega_1, mu_0, mu_1 = cumulative_weight_and_means(probabilities, bin_values)
@@ -89,12 +97,15 @@ def otsu_threshold(img, num_bins=256):
 
 
 def apply_threshold(img, threshold):
+     '''Returns water and land masks based on given dB threshold'''
+
      water_mask = img <= threshold
 
      return water_mask, ~water_mask 
 
 
 def slope_mask(dem, max_slope=5.0, return_slope=False):
+     '''True where terrain is flat enough for standing water to be physically plausiable'''
 
      Gx, Gy = np.gradient(dem, axis=1), np.gradient(dem, axis=0)
      
@@ -107,16 +118,18 @@ def slope_mask(dem, max_slope=5.0, return_slope=False):
 
 
 def combine_mask(water_mask, slope_mask):
+     '''Final water mask: only pixels that are both spectrally water and flat terratin'''
 
      return water_mask & slope_mask
 
 
 def extract_and_save_geojson(flood_extent, transform, crs, min_area_m2=5000):
+     '''Vectorizes mask into polygons and saves as GeoJSON'''
 
      points = []
 
      #extract shape and true/false values
-     for shape, value in features.shapes(flood_extent, transform=transform):
+     for shape, value in rasterio.features.shapes(flood_extent, transform=transform):
           points.append((shape, value))
 
      #filter out the false values
@@ -141,14 +154,20 @@ def extract_and_save_geojson(flood_extent, transform, crs, min_area_m2=5000):
 
 
 def process_scene(sar_filepath, dem_filepath):
+     '''
+     Runs the full pipeline on one SAR scene.
+     Returns the final mask + geo metadata
+     '''
 
-     #load and crop
+     #load sar scene
      sar_array, crs, transform = load_scene(sar_filepath)
 
-     window = Window(col_off = 0, row_off = 500, width = sar_array.shape[1], height = 1500)
-     cropped_transform = window_transform(window, transform)
-     sar_array = sar_array[500:2000, :]
-     transform = cropped_transform
+     #dem file load and align to sar data
+     dem = load_and_align(dem_filepath, transform, sar_array.shape, crs)
+
+     #check if shape match
+     if dem.shape != sar_array.shape:
+          raise ValueError(f'DEM shape {dem.shape} does not match SAR array shape {sar_array.shape}')
 
      #despeckle on raw then db conversion
      despeckled = lee_filter(sar_array)
@@ -160,28 +179,20 @@ def process_scene(sar_filepath, dem_filepath):
      #water mask
      water_mask, land_mask = apply_threshold(db_img, threshold)
 
-     #dem file load and align to sar data
-     dem = load_and_align(dem_filepath, transform, sar_array.shape, crs)
-
-     #check if shape match
-     print(dem.shape, sar_array.shape)
-
      #slope mask
      mask_slope, slope = slope_mask(dem, return_slope=True)     
 
-     #combined mask
+     #combined/final mask
      comb_mask = combine_mask(water_mask, mask_slope) 
 
      return comb_mask, transform, crs
 
 
 def validate_args(args):
-     '''
-     Checks all CLI arguments for valid values
-     '''
+     '''Checks all CLI arguments for valid values'''
 
      for path, label in [(args.baseline, 'baseline'), (args.flood, 'flood'), (args.dem, 'dem')]:
-          if not os.path. exists(path):
+          if not os.path.exists(path):
                raise FileNotFoundError(f'{label} file not found at: {path}')
 
           if not path.lower().endswith(('.tif', '.tiff')):
@@ -210,16 +221,13 @@ def main():
           dem_filepath
      )
 
-     
+     #new water only = flooding
      flood_extent = during_mask & ~baseline_mask
 
-     flood_extent_int = flood_extent.astype('uint8')
+     flood_extent_int = flood_extent.astype('uint8') #features.shapes needs int not bool
 
      #save 
      extract_and_save_geojson(flood_extent_int, during_transform, during_crs)
 
 if __name__ == '__main__':
      main()
-
-
-     
