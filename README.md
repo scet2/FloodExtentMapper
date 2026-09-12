@@ -1,7 +1,7 @@
 # Flood Extent Detection
 An end-to-end Python pipeline that detects flood extent from raw Sentinel-1 SAR imagery and outputs a vectorized flood extent map, implementing adaptive despeckling (Lee filter [[1]](#references)), Otsu segmentation [[2]](#references), and DEM-based terrain correction.
 
-This project was built to explore how satellite data can be used for earth observation tasks such as flood detection, usage of SAR imagery and remote-sensing techniques by implementing each processing step myself rather than relying on existing tools to 
+This project was built to explore how satellite data can be used for earth observation tasks such as flood detection, usage of SAR imagery and remote-sensing techniques by implementing each processing step myself rather than relying on existing tools.
 
 ## Setup & Usage
 
@@ -11,7 +11,7 @@ This project was built to explore how satellite data can be used for earth obser
 pip install -r requirements.txt
 ```
 
-2. To run the tool on an area of your choice you need a baseline SAR file, a during flooding file and a DEM file of the area. For example, to produce the Valencia results shown above:
+2. To run the tool on an area of your choice you need a baseline SAR file, a scene during the flooding and a DEM file of the area. For example, to produce the Valencia results shown below:
 
 ```bash
 python flood_detection.py example-data/2024-10-25-Sentinel1-Valencia(Raw).tiff example-data/2024-10-31-Sentinel1-Valencia(Raw).tiff example-data/DEM_COPERNICUS_Valencia(Raw)
@@ -30,7 +30,7 @@ Raw SAR imagery is affected by speckle noise, a noise pattern that exists in rad
 </td>
 <td align="center">
   <b>After Lee filter</b><br/>
-  <img src="example-data/leeFilter.png" width="300"/>
+  <img src="example-data/leefilter.png" width="300"/>
 </td>
 </tr></table>
 
